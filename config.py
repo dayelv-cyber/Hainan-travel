@@ -6,10 +6,15 @@ APP_NAME_EN = "FTIR-Based Urinary Stone Screening System"
 
 PROJECT_DIR = Path(__file__).resolve().parent
 WORKSPACE_DIR = PROJECT_DIR.parent
-DEFAULT_DATA_DIR = WORKSPACE_DIR / "大创2" / "大创"
+DEFAULT_DATA_DIR = WORKSPACE_DIR / "最终文件" / "大创"
 DEFAULT_PURE_FILE = DEFAULT_DATA_DIR / "data-纯品.csv"
 DEFAULT_PATIENT_FILE = DEFAULT_DATA_DIR / "data-原始.csv"
-DEFAULT_EXISTING_RESULT = DEFAULT_DATA_DIR / "病人结石混合谱型分析.csv"
+DEFAULT_MEAN_FILE = DEFAULT_DATA_DIR / "data-均值.csv"
+DEFAULT_NNLS_RESULT = DEFAULT_DATA_DIR / "混合物分解概率结果.csv"
+DEFAULT_VALIDATION_FILE = DEFAULT_DATA_DIR / "送检目录(2).xlsx"
+DEFAULT_PCA_PURE_IMAGE = DEFAULT_DATA_DIR / "纯品PCA分类.png"
+DEFAULT_PCA_PATIENT_IMAGE = DEFAULT_DATA_DIR / "病人结石PCA投影.png"
+DEFAULT_EXISTING_RESULT = DEFAULT_NNLS_RESULT
 OUTPUT_DIR = PROJECT_DIR / "outputs"
 
 FREQ_MIN = 1.0
@@ -20,44 +25,50 @@ SG_DERIV = 2
 PCA_COMPONENTS = 8
 
 CM_TO_THZ = 1 / 33.356
-MINOR_PROB_THRESHOLD = 0.25
+MINOR_PROB_THRESHOLD = 0.10
 PEAK_TOLERANCE = 0.10
 
-DEFAULT_CLASSES = ["COM", "UA", "MAP", "CYS"]
+DEFAULT_CLASSES = ["CAOX", "DCY", "URIC", "APA", "DCP"]
 CLASS_LABELS_CN = {
-    "COM": "草酸钙",
-    "UA": "尿酸",
-    "MAP": "磷酸铵镁",
-    "CYS": "胱氨酸",
+    "CAOX": "草酸钙",
+    "DCY": "胱氨酸",
+    "URIC": "尿酸",
+    "APA": "磷灰石/碳酸磷灰石",
+    "DCP": "磷酸氢钙",
+    "AMP": "磷酸铵镁",
     "Unknown": "未知",
 }
 CLASS_LABELS_EN = {
-    "COM": "Calcium oxalate",
-    "UA": "Uric acid",
-    "MAP": "Magnesium ammonium phosphate",
-    "CYS": "Cystine",
+    "CAOX": "Calcium oxalate",
+    "DCY": "Cystine",
+    "URIC": "Uric acid",
+    "APA": "Apatite / carbonate apatite",
+    "DCP": "Dicalcium phosphate",
+    "AMP": "Magnesium ammonium phosphate",
     "Unknown": "Unknown",
 }
 
 PEAK_RULES = {
-    "COM": {"peaks": [3.00, 3.03], "status": "primary"},
-    "UA": {"peaks": [1.42, 2.39, 2.92, 3.98], "status": "primary"},
-    "CYS": {"peaks": [1.49, 2.09, 2.96], "status": "reference_pending"},
-    "MAP": {"peaks": [1.97, 2.85, 3.41], "status": "reference_pending"},
+    "CAOX": {"peaks": [3.00, 3.03], "status": "primary"},
+    "URIC": {"peaks": [1.42, 2.39, 2.92, 3.98], "status": "primary"},
+    "DCY": {"peaks": [1.49, 2.09, 2.96], "status": "reference_pending"},
+    "APA": {"peaks": [], "status": "reference_pending"},
+    "DCP": {"peaks": [], "status": "reference_pending"},
 }
 
 THERAPY_NOTES_CN = {
-    "COM": "限草酸饮食、增加饮水；必要时由医生评估药物预防。",
-    "UA": "低嘌呤饮食、碱化尿液、控制尿酸；需结合临床检查。",
-    "MAP": "提示可能与泌尿系感染相关，建议进一步感染相关检查。",
-    "CYS": "提示可能与胱氨酸尿症相关，需长期管理和专科评估。",
+    "CAOX": "科研参考：草酸钙相关样本通常关注饮水、草酸摄入与复发风险管理，需结合临床确认。",
+    "DCY": "科研参考：胱氨酸相关样本提示可能涉及代谢因素，需专科进一步评估。",
+    "URIC": "科研参考：尿酸相关样本通常关注嘌呤代谢、尿液 pH 与尿酸水平，需结合临床检查。",
+    "APA": "科研参考：磷灰石/碳酸磷灰石相关样本可与感染、尿液环境等因素有关，需进一步复核。",
+    "DCP": "科研参考：磷酸氢钙相关样本需结合尿液理化指标和标准成分分析判断。",
     "Unknown": "结果不确定，建议结合标准成分分析进一步复核。",
 }
 THERAPY_NOTES_EN = {
-    "COM": "Reduce oxalate load, increase hydration, and consider medical prevention under clinical guidance.",
-    "UA": "Consider low-purine diet, urine alkalization, and uric acid control with clinical confirmation.",
-    "MAP": "May indicate infection-related stones; further infection workup is recommended.",
-    "CYS": "May indicate cystinuria-related stones; long-term specialist management is needed.",
+    "CAOX": "Research note: calcium oxalate results should be interpreted with hydration, oxalate load, and recurrence risk under clinical confirmation.",
+    "DCY": "Research note: cystine-related results may suggest metabolic factors and require specialist confirmation.",
+    "URIC": "Research note: uric-acid-related results should be interpreted with purine metabolism, urine pH, and clinical tests.",
+    "APA": "Research note: apatite/carbonate apatite may relate to infection or urine chemistry and requires confirmation.",
+    "DCP": "Research note: dicalcium phosphate results should be interpreted with urine chemistry and standard compositional analysis.",
     "Unknown": "Uncertain result; confirm with standard compositional analysis.",
 }
-

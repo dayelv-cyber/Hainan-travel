@@ -45,3 +45,21 @@ def export_excel(summary: pd.DataFrame, details: pd.DataFrame, similarity: pd.Da
     wb.save(path)
     return path
 
+
+def export_workbook(sheets: dict[str, pd.DataFrame], prefix: str = "尿结石分析结果", output_dir: Path = OUTPUT_DIR) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    wb = Workbook()
+    for idx, (title, df) in enumerate(sheets.items()):
+        ws = wb.active if idx == 0 else wb.create_sheet(title)
+        ws.title = title[:31]
+        if df is None or df.empty:
+            ws.append(["说明"])
+            ws.append(["暂无数据"])
+        else:
+            ws.append(list(df.columns))
+            for row in df.itertuples(index=False):
+                ws.append(list(row))
+        _style(ws)
+    wb.save(path)
+    return path
