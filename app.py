@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import html
 import sys
 from pathlib import Path
 
 import pandas as pd
+import plotly.graph_objects as go
 
 sys.path.append(str(Path(__file__).resolve().parent))
 
@@ -46,9 +48,19 @@ def class_name(cls: str, lang: str) -> str:
     return f"{cls} {labels.get(cls, '')}".strip()
 
 
+CLASS_ORDER = ["APA", "CAOX", "DCP", "DCY", "URIC"]
+CLASS_COLORS = {
+    "APA": "#1f77b4",
+    "CAOX": "#ff7f0e",
+    "DCP": "#2ca02c",
+    "DCY": "#d62728",
+    "URIC": "#9467bd",
+}
+
+
 def localize_class_columns(df: pd.DataFrame, lang: str) -> pd.DataFrame:
     out = df.copy()
-    for col in ["NNLS主成分", "SVM主判"]:
+    for col in ["NNLS主成分"]:
         if col in out.columns:
             out[col] = out[col].map(lambda x: class_name(str(x), lang) if pd.notna(x) else x)
     if "NNLS前2位" in out.columns:
@@ -57,10 +69,75 @@ def localize_class_columns(df: pd.DataFrame, lang: str) -> pd.DataFrame:
 
 
 def class_count_frame(summary: pd.DataFrame, lang: str) -> pd.DataFrame:
-    counts = summary["NNLS主成分"].value_counts().reindex(DEFAULT_CLASSES, fill_value=0).reset_index()
+    counts = summary["NNLS主成分"].value_counts().reindex(CLASS_ORDER, fill_value=0).reset_index()
     counts.columns = ["Class", "Samples"]
     counts["Display"] = counts["Class"].map(lambda x: class_name(str(x), lang))
     return counts
+
+
+def colored_bar_figure(df: pd.DataFrame, x: str, y: str, color_col: str, y_title: str, height: int = 260) -> go.Figure:
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            x=df[x],
+            y=df[y],
+            marker_color=[CLASS_COLORS.get(str(cls), "#64748b") for cls in df[color_col]],
+            text=df[y],
+            textposition="outside",
+            hovertemplate="%{x}<br>%{y}<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        height=height,
+        margin=dict(l=10, r=10, t=20, b=10),
+        xaxis_title="",
+        yaxis_title=y_title,
+        showlegend=False,
+    )
+    fig.update_xaxes(tickangle=0, categoryorder="array", categoryarray=list(df[x]))
+    return fig
+
+
+def component_mapping_text(lang: str) -> str:
+    labels = labels_for(lang)
+    if lang == "zh":
+        return "成分缩写对应关系： " + "； ".join(f"{cls}={labels.get(cls, '')}" for cls in DEFAULT_CLASSES)
+    return "Component codes: " + "; ".join(f"{cls}={labels.get(cls, '')}" for cls in DEFAULT_CLASSES)
+
+
+def summary_html_table(df: pd.DataFrame, lang: str) -> str:
+    headers = [
+        tr(lang, "样品", "Sample"),
+        tr(lang, "NNLS主成分", "NNLS Top"),
+        tr(lang, "主成分相对贡献", "Top Contribution"),
+        tr(lang, "NNLS成分构成", "NNLS Composition"),
+        tr(lang, "构成状态", "Composition Status"),
+        tr(lang, "拟合残差", "Fitting Residual"),
+        tr(lang, "残差标记", "Residual Flag"),
+        tr(lang, "综合判断", "Summary"),
+    ]
+    rows = []
+    for _, row in df.iterrows():
+        sample = str(row["样品"])
+        cells = [
+            f'<a class="sample-link" href="?view=sample&sample={html.escape(sample)}">{html.escape(sample)}</a>',
+            html.escape(class_name(str(row["NNLS主成分"]), lang)),
+            f'{float(row["NNLS置信度"]):.4f}',
+            html.escape(str(row["NNLS成分构成"])),
+            html.escape(str(row["构成状态"])),
+            f'{float(row["拟合残差"]):.4f}' if "拟合残差" in row else "",
+            html.escape(str(row.get("残差标记", ""))),
+            html.escape(str(row["综合判断"])),
+        ]
+        rows.append("<tr>" + "".join(f"<td>{cell}</td>" for cell in cells) + "</tr>")
+    return (
+        '<div class="table-wrap"><table class="sample-table">'
+        + "<thead><tr>"
+        + "".join(f"<th>{html.escape(h)}</th>" for h in headers)
+        + "</tr></thead><tbody>"
+        + "".join(rows)
+        + "</tbody></table></div>"
+    )
 
 
 def uploaded_or_default(uploaded, default_path: Path):
@@ -128,9 +205,9 @@ def research_basis(lang: str) -> pd.DataFrame:
                 "引用": "[1], [4], [5]",
             },
             {
-                "模块": "SVM 辅助",
-                "科研参考说明": "SVM 提供单标签分类视角,适合与 NNLS 形成交叉验证。若两者一致,可信度提高;若不一致,常提示混合成分或基底外成分,需要复核。",
-                "引用": "[5]",
+                "模块": "拟合残差质控",
+                "科研参考说明": "拟合残差衡量纯品基底线性组合对样品谱的解释程度。残差偏高说明当前纯品库不能充分解释该样品谱形,可能存在噪声、基线差异、混合复杂或基底外成分,应作为复核线索。",
+                "引用": "[4], [5]",
             },
             {
                 "模块": "URIC 尿酸",
@@ -154,7 +231,7 @@ def research_basis(lang: str) -> pd.DataFrame:
             },
             {
                 "模块": "局限依据",
-                "科研参考说明": "文献和送检目录都表明尿路结石/痛风石可包含混合成分或基底外成分。当前纯品库未覆盖 AMP/MAP,且 APA/DCP 纯品数量较少,因此 S69 等样品必须标注为基底未覆盖或需复核。",
+                "科研参考说明": "文献和送检目录都表明尿路结石/痛风石可包含混合成分或基底外成分。当前系统以五类纯品基底和 NNLS 分解为核心,结果需要结合送检弱标签、谱图形态和残差标记综合解释。",
                 "引用": "[1], [4], [5]",
             },
         ]
@@ -166,9 +243,9 @@ def research_basis(lang: str) -> pd.DataFrame:
                 "Refs": "[1], [4], [5]",
             },
             {
-                "Module": "SVM",
-                "Research note": "SVM provides a single-label classification view. Agreement with NNLS increases confidence, while disagreement flags mixed or out-of-basis samples.",
-                "Refs": "[5]",
+                "Module": "Residual quality control",
+                "Research note": "The fitting residual measures how well the current pure-reference basis explains a sample spectrum. A high residual flags noise, baseline mismatch, complex mixture, or out-of-basis components.",
+                "Refs": "[4], [5]",
             },
             {
                 "Module": "URIC",
@@ -182,7 +259,7 @@ def research_basis(lang: str) -> pd.DataFrame:
             },
             {
                 "Module": "Limitations",
-                "Research note": "Urinary/gout stones can be mixed and may contain out-of-basis components. AMP/MAP is not covered by the current reference set, and APA/DCP have limited pure spectra.",
+                "Research note": "Urinary/gout stones can be mixed and may contain out-of-basis components. The system should be interpreted with NNLS, weak-label validation, spectral morphology, and residual flags together.",
                 "Refs": "[1], [4], [5]",
             },
         ]
@@ -221,6 +298,41 @@ st.markdown(
         border: 1px solid #fecaca;
         color: #7f1d1d;
     }
+    .table-wrap {
+        max-height: 520px;
+        overflow: auto;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        background: #fff;
+    }
+    .sample-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 14px;
+    }
+    .sample-table th {
+        position: sticky;
+        top: 0;
+        background: #f8fafc;
+        color: #64748b;
+        font-weight: 600;
+        border-bottom: 1px solid #e2e8f0;
+        padding: 10px 12px;
+        text-align: left;
+        white-space: nowrap;
+    }
+    .sample-table td {
+        border-bottom: 1px solid #e2e8f0;
+        padding: 10px 12px;
+        vertical-align: top;
+        white-space: nowrap;
+    }
+    .sample-link {
+        color: #b22222;
+        font-weight: 700;
+        text-decoration: none;
+    }
+    .sample-link:hover { text-decoration: underline; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -248,76 +360,54 @@ st.sidebar.header(tr(lang, "数据与运行", "Data & Run"))
 st.sidebar.caption(tr(lang, "默认读取最终文件/大创中的最新数据；也可以上传文件临时替换。", "Default data are read from 最终文件/大创; uploaded files can temporarily override them."))
 st.sidebar.code(str(DEFAULT_DATA_DIR), language="text")
 
-with st.sidebar.expander(tr(lang, "高级选项：上传/替换文件", "Advanced: Upload / Override Files"), expanded=False):
+with st.sidebar.expander(tr(lang, "上传检测文件", "Upload Detection File"), expanded=True):
     st.caption(
         tr(
             lang,
-            "正常演示无需上传，系统会自动读取默认文件。这里仅用于临时替换算法结果、纯品库、样品谱或脱敏验证表。",
-            "No upload is needed for normal demos. Use this area only to temporarily override results, references, sample spectra, or validation files.",
+            "上传一个原始重复谱 CSV 即可完成检测；后端会自动求平均、NNLS分解、拟合残差评估和送检验证。正常演示也可以不上传，系统会读取默认文件。",
+            "Upload one raw replicate-spectra CSV; backend will average replicates, run NNLS, residual quality control, and validation. For demos, uploading is optional.",
         )
     )
-    nnls_upload = st.file_uploader(
-        tr(lang, "NNLS概率结果 CSV", "NNLS result CSV"),
+    raw_upload = st.file_uploader(
+        tr(lang, "原始重复谱 CSV", "Raw replicate spectra CSV"),
         type=["csv"],
-        help=tr(lang, "默认使用 混合物分解概率结果.csv", "Default: 混合物分解概率结果.csv"),
-    )
-    pure_upload = st.file_uploader(
-        tr(lang, "纯品数据 CSV", "Pure reference CSV"),
-        type=["csv"],
-        help=tr(lang, "用于训练 SVM。默认使用 data-纯品.csv", "Used for SVM training. Default: data-纯品.csv"),
-    )
-    mean_upload = st.file_uploader(
-        tr(lang, "样品平均谱 CSV", "Sample mean spectra CSV"),
-        type=["csv"],
-        help=tr(lang, "用于 SVM 预测和样品详情曲线。默认使用 data-均值.csv", "Used for SVM prediction and sample curves. Default: data-均值.csv"),
-    )
-    validation_upload = st.file_uploader(
-        tr(lang, "脱敏送检对照 Excel", "De-identified validation Excel"),
-        type=["xlsx", "xls"],
-        help=tr(lang, "需包含 Sheet1: 序号/上理工/长海。不要上传含姓名住院号的公开版本。", "Requires Sheet1 with sample/coarse/detail fields."),
+        help=tr(lang, "格式示例：第一列 wave_num，后续列为 S31-1、S31-2 等重复谱。", "Format: first column wave_num, followed by replicate columns such as S31-1, S31-2."),
     )
 
 active_sources = {
-    "nnls": source_name(nnls_upload, DEFAULT_NNLS_RESULT),
-    "pure": source_name(pure_upload, DEFAULT_PURE_FILE),
-    "mean": source_name(mean_upload, DEFAULT_MEAN_FILE),
-    "validation": source_name(validation_upload, DEFAULT_VALIDATION_FILE),
+    "raw": source_name(raw_upload, DEFAULT_PATIENT_FILE),
 }
 st.sidebar.caption(
     tr(
         lang,
-        "当前文件: "
-        + f"NNLS={active_sources['nnls']}; 纯品={active_sources['pure']}; 平均谱={active_sources['mean']}; 验证={active_sources['validation']}",
-        "Current files: "
-        + f"NNLS={active_sources['nnls']}; pure={active_sources['pure']}; mean={active_sources['mean']}; validation={active_sources['validation']}",
+        "当前检测文件: " + active_sources["raw"],
+        "Current detection file: " + active_sources["raw"],
     )
 )
 run = st.sidebar.button(tr(lang, "运行/刷新分析", "Run / Refresh"), type="primary")
 
 input_signature = (
-    source_signature(nnls_upload, DEFAULT_NNLS_RESULT),
-    source_signature(pure_upload, DEFAULT_PURE_FILE),
-    source_signature(mean_upload, DEFAULT_MEAN_FILE),
-    source_signature(validation_upload, DEFAULT_VALIDATION_FILE),
+    source_signature(raw_upload, DEFAULT_PATIENT_FILE),
 )
 if st.session_state.get("input_signature") != input_signature:
     st.session_state.pop("v2_analysis", None)
     st.session_state.input_signature = input_signature
 
 if "v2_analysis" not in st.session_state or run:
-    with st.spinner(tr(lang, "正在读取 NNLS 结果、训练 SVM 并计算验证指标...", "Loading NNLS, training SVM, and validating...")):
+    with st.spinner(tr(lang, "正在计算 NNLS 分解、拟合残差和验证指标...", "Running NNLS, residual quality control, and validation...")):
         st.session_state.v2_analysis = run_v2_analysis(
-            nnls_path=uploaded_or_default(nnls_upload, DEFAULT_NNLS_RESULT),
-            pure_path=uploaded_or_default(pure_upload, DEFAULT_PURE_FILE),
-            mean_path=uploaded_or_default(mean_upload, DEFAULT_MEAN_FILE),
+            pure_path=DEFAULT_PURE_FILE,
+            mean_path=DEFAULT_MEAN_FILE,
             raw_path=DEFAULT_PATIENT_FILE,
-            validation_path=uploaded_or_default(validation_upload, DEFAULT_VALIDATION_FILE),
+            validation_path=DEFAULT_VALIDATION_FILE,
+            uploaded_raw_source=raw_upload,
         )
 
 analysis = st.session_state.v2_analysis
 summary = analysis["summary"]
 validation = analysis["validation"]
 metrics = analysis["validation_metrics"]
+component_accuracy = analysis["component_accuracy"]
 classes = analysis["classes"]
 
 metric_cols = st.columns(5)
@@ -325,12 +415,16 @@ metric_cols[0].metric(tr(lang, "样品数", "Samples"), len(summary))
 metric_cols[1].metric(tr(lang, "类别数", "Classes"), len(classes))
 metric_cols[2].metric(tr(lang, "合理归属", "Reasonable"), f"{metrics['reasonable']}/{metrics['total']}")
 metric_cols[3].metric(tr(lang, "组合命中", "Top-2"), f"{metrics['combo']}/{metrics['total']}")
-metric_cols[4].metric("SVM PCA", f"{analysis['svm_pca_explained_variance']:.2f}" if analysis["svm_pca_explained_variance"] else "-")
+high_residual_count = int((summary["残差标记"] == "拟合残差偏高").sum()) if "残差标记" in summary.columns else 0
+metric_cols[4].metric(tr(lang, "残差复核", "Residual Review"), high_residual_count)
 
 count_df = class_count_frame(summary, lang)
 top_cls = count_df.sort_values("Samples", ascending=False).iloc[0]
 st.markdown("### " + tr(lang, "本批样品结论概览", "Batch Overview"))
-st.bar_chart(count_df, x="Display", y="Samples", height=230)
+st.plotly_chart(
+    colored_bar_figure(count_df, x="Display", y="Samples", color_col="Class", y_title=tr(lang, "样品数", "Samples"), height=240),
+    use_container_width=True,
+)
 st.caption(
     tr(
         lang,
@@ -341,48 +435,66 @@ st.caption(
 
 st.markdown(
     "<div class='note'>"
-    + tr(
-        lang,
-        "两方法不一致往往指向混合结石：SVM 被迫单选一个主类，NNLS 则会显示多个成分的贡献。因此“不一致”是复核提示，不一定是程序错误。",
-        "Disagreement can indicate mixed stones: SVM must choose one class, while NNLS can expose multiple spectral contributors.",
-    )
+    + component_mapping_text(lang)
     + "</div>",
     unsafe_allow_html=True,
 )
 
-tab_main, tab_validation, tab_sample, tab_pca, tab_reference = st.tabs(
-    [
-        tr(lang, "双方法主表", "Dual-Method Table"),
-        tr(lang, "验证", "Validation"),
-        tr(lang, "样品详情", "Sample Detail"),
-        tr(lang, "PCA 图", "PCA Figures"),
-        tr(lang, "科研参考", "Research Notes"),
-    ]
-)
+def query_value(name: str, default: str = "") -> str:
+    value = st.query_params.get(name, default)
+    if isinstance(value, list):
+        return value[0] if value else default
+    return str(value)
 
-with tab_main:
-    display_cols = [
+
+views = [
+    ("main", tr(lang, "NNLS主表", "NNLS Table")),
+    ("validation", tr(lang, "验证", "Validation")),
+    ("sample", tr(lang, "样品详情", "Sample Detail")),
+    ("pca", tr(lang, "PCA 图", "PCA Figures")),
+    ("reference", tr(lang, "科研参考", "Research Notes")),
+]
+view_keys = [item[0] for item in views]
+view_labels = [item[1] for item in views]
+current_view = query_value("view", "main")
+if current_view not in view_keys:
+    current_view = "main"
+selected_label = st.radio(
+    tr(lang, "页面", "Page"),
+    view_labels,
+    index=view_keys.index(current_view),
+    horizontal=True,
+    label_visibility="collapsed",
+)
+view = view_keys[view_labels.index(selected_label)]
+if view != current_view:
+    st.query_params["view"] = view
+
+if view == "main":
+    main_cols = [
         "样品",
         "NNLS主成分",
         "NNLS置信度",
         "NNLS成分构成",
-        "SVM主判",
-        "SVM置信度",
-        "双法是否一致",
+        "构成状态",
+        "拟合残差",
+        "残差标记",
         "综合判断",
     ]
-    st.dataframe(localize_class_columns(summary[display_cols], lang), use_container_width=True, hide_index=True)
+    st.caption(tr(lang, "点击样品编号可进入样品详情。", "Click a sample ID to open its detail page."))
+    st.markdown(summary_html_table(summary[main_cols], lang), unsafe_allow_html=True)
     if st.button(tr(lang, "导出 Excel", "Export Excel")):
         path = export_workbook(
             {
-                "双方法主表": summary.drop(columns=["NNLS前2位", "S69提示"], errors="ignore"),
+                "NNLS主表": summary.drop(columns=["NNLS前2位", "S69提示"], errors="ignore"),
                 "验证": validation.drop(columns=["S69提示"], errors="ignore"),
+                "成分级准确率": component_accuracy,
             },
-            prefix="尿结石NNLS_SVM_验证结果",
+            prefix="尿结石NNLS_验证结果",
         )
         st.success(str(path))
 
-with tab_validation:
+elif view == "validation":
     st.info(
         tr(
             lang,
@@ -397,22 +509,49 @@ with tab_validation:
     vcols[1].caption(tr(lang, "NNLS主成分包含在长海详细成分中，作为主指标。", "Top NNLS appears in detailed composition; primary metric."))
     vcols[2].metric(tr(lang, "成分组合", "Top-2 Combo"), f"{metrics['combo']}/{metrics['total']}")
     vcols[2].caption(tr(lang, "NNLS前二成分与详细成分有交集，更贴合混合本质。", "Top-2 NNLS overlaps detailed composition."))
+    st.subheader(tr(lang, "成分预测准确率", "Component-Level Accuracy"))
+    comp_display = component_accuracy.copy()
+    comp_display["成分"] = comp_display["成分"].map(lambda x: class_name(str(x), lang))
+    st.dataframe(comp_display, use_container_width=True, hide_index=True)
+    st.caption(
+        tr(
+            lang,
+            "检出率表示送检中出现该成分时，NNLS前二成分是否覆盖它；预测准确率表示NNLS前二成分预测到该类时，该类是否出现在送检详细成分中。",
+            "Recall shows whether top-2 NNLS covers a component present in validation; precision shows whether a predicted top-2 component appears in the detailed validation composition.",
+        )
+    )
     st.dataframe(localize_class_columns(validation.drop(columns=["S69提示"], errors="ignore"), lang), use_container_width=True, hide_index=True)
 
-with tab_sample:
-    sample = st.selectbox(tr(lang, "选择样品", "Select sample"), list(summary["样品"]))
+elif view == "sample":
+    sample_list = list(summary["样品"])
+    query_sample = query_value("sample", sample_list[0] if sample_list else "")
+    sample_index = sample_list.index(query_sample) if query_sample in sample_list else 0
+    sample = st.selectbox(tr(lang, "选择样品", "Select sample"), sample_list, index=sample_index)
     row = summary.loc[summary["样品"] == sample].iloc[0]
     left, right = st.columns([1, 1])
     with left:
         st.subheader(tr(lang, "NNLS 五成分概率", "NNLS Probabilities"))
         prob_df = pd.DataFrame(
             {
+                "Class": classes,
                 tr(lang, "成分", "Class"): [class_name(cls, lang) for cls in classes],
                 tr(lang, "概率", "Probability"): [float(row[cls]) for cls in classes],
             }
         )
-        st.bar_chart(prob_df, x=tr(lang, "成分", "Class"), y=tr(lang, "概率", "Probability"), height=300)
-        st.dataframe(prob_df, use_container_width=True, hide_index=True)
+        st.plotly_chart(
+            colored_bar_figure(
+                prob_df,
+                x=tr(lang, "成分", "Class"),
+                y=tr(lang, "概率", "Probability"),
+                color_col="Class",
+                y_title=tr(lang, "相对贡献", "Relative Contribution"),
+                height=300,
+            ),
+            use_container_width=True,
+        )
+        st.dataframe(prob_df.drop(columns=["Class"]), use_container_width=True, hide_index=True)
+        if "拟合残差" in row:
+            st.metric(tr(lang, "拟合残差", "Fitting Residual"), f"{float(row['拟合残差']):.4f}", str(row.get("残差标记", "")))
     with right:
         st.subheader(tr(lang, "平均谱", "Mean Spectrum"))
         mean_df = analysis["mean_df"]
@@ -422,56 +561,133 @@ with tab_sample:
         else:
             st.warning(tr(lang, "未找到该样品的平均谱。", "Mean spectrum not found."))
 
-with tab_pca:
-    st.caption(tr(lang, "PCA 图由 PCA.py 生成；修改 NNLS 的数值校正不会改变 PCA 图。", "PCA figures are generated by PCA.py. NNLS numeric changes do not alter PCA figures."))
+elif view == "pca":
     c1, c2 = st.columns(2)
-    with c1:
-        st.subheader(tr(lang, "纯品 PCA 分类", "Pure PCA"))
-        if DEFAULT_PCA_PURE_IMAGE.exists():
-            st.image(str(DEFAULT_PCA_PURE_IMAGE), use_container_width=True)
-        else:
-            st.warning(str(DEFAULT_PCA_PURE_IMAGE))
-    with c2:
-        st.subheader(tr(lang, "病人样本 PCA 投影", "Patient Projection"))
-        if DEFAULT_PCA_PATIENT_IMAGE.exists():
-            st.image(str(DEFAULT_PCA_PATIENT_IMAGE), use_container_width=True)
-        else:
-            st.warning(str(DEFAULT_PCA_PATIENT_IMAGE))
+    if raw_upload is None:
+        st.caption(
+            tr(
+                lang,
+                "默认模式显示由 PCA.py 生成的标准 PCA 图；上传临时检测文件时，会按同一 PCA 流程动态投影当前样品。",
+                "Default mode shows the PCA.py-generated reference figures; uploads are projected dynamically with the same PCA workflow.",
+            )
+        )
+        with c1:
+            st.subheader(tr(lang, "纯品 PCA 分类", "Pure PCA"))
+            if DEFAULT_PCA_PURE_IMAGE.exists():
+                st.image(str(DEFAULT_PCA_PURE_IMAGE), use_container_width=True)
+            else:
+                st.warning(str(DEFAULT_PCA_PURE_IMAGE))
+        with c2:
+            st.subheader(tr(lang, "病人样本 PCA 投影", "Patient Projection"))
+            if DEFAULT_PCA_PATIENT_IMAGE.exists():
+                st.image(str(DEFAULT_PCA_PATIENT_IMAGE), use_container_width=True)
+            else:
+                st.warning(str(DEFAULT_PCA_PATIENT_IMAGE))
+    else:
+        st.caption(
+            tr(
+                lang,
+                "当前为临时上传文件投影图：纯品 PCA 方向、配色与原 PCA.py 保持一致，当前样品以黑色 × 标出。",
+                "Current upload projection: PCA orientation and colors follow PCA.py; current samples are marked as black x.",
+            )
+        )
+        pca_pure = analysis["pca_pure"].copy()
+        pca_sample = analysis["pca_sample"].copy()
 
-with tab_reference:
+        def add_pure_traces(fig):
+            for cls in CLASS_ORDER:
+                sub = pca_pure[pca_pure["类别"] == cls]
+                if sub.empty:
+                    continue
+                fig.add_trace(
+                    go.Scatter(
+                        x=sub["PC1"],
+                        y=sub["PC2"],
+                        mode="markers",
+                        name=class_name(cls, lang),
+                        text=sub["名称"],
+                        marker=dict(color=CLASS_COLORS.get(cls, "#777"), size=8, opacity=0.75),
+                        hovertemplate="%{text}<br>PC1=%{x:.2f}<br>PC2=%{y:.2f}<extra></extra>",
+                    )
+                )
+
+        with c1:
+            st.subheader(tr(lang, "纯品 PCA 分类", "Pure PCA"))
+            fig_pure = go.Figure()
+            add_pure_traces(fig_pure)
+            fig_pure.update_layout(xaxis_title="PC1", yaxis_title="PC2", height=420, margin=dict(l=8, r=8, t=16, b=8))
+            st.plotly_chart(fig_pure, use_container_width=True)
+        with c2:
+            st.subheader(tr(lang, "病人样本 PCA 投影", "Patient Projection"))
+            fig_patient = go.Figure()
+            add_pure_traces(fig_patient)
+            fig_patient.add_trace(
+                go.Scatter(
+                    x=pca_sample["PC1"],
+                    y=pca_sample["PC2"],
+                    mode="markers",
+                    name=tr(lang, "当前样品", "Current samples"),
+                    text=pca_sample["名称"],
+                    marker=dict(color="black", size=11, symbol="x", line=dict(width=2)),
+                    hovertemplate="%{text}<br>PC1=%{x:.2f}<br>PC2=%{y:.2f}<extra></extra>",
+                )
+            )
+            fig_patient.update_layout(xaxis_title="PC1", yaxis_title="PC2", height=420, margin=dict(l=8, r=8, t=16, b=8))
+            st.plotly_chart(fig_patient, use_container_width=True)
+        st.caption(
+            tr(
+                lang,
+                f"当前 PCA 由纯品数据拟合，并投影当前 {len(pca_sample)} 个样品；前两主成分累计解释率 {analysis['pca_explained_variance']:.2f}。",
+                f"PCA is fitted on pure spectra and projects {len(pca_sample)} current samples; PC1+PC2 explained variance is {analysis['pca_explained_variance']:.2f}.",
+            )
+        )
+
+elif view == "reference":
     label_map = labels_for(lang)
     notes = THERAPY_NOTES_CN if lang == "zh" else THERAPY_NOTES_EN
-    st.subheader(tr(lang, "成分解释", "Component Notes"))
-    ref = pd.DataFrame(
-        {
-            tr(lang, "类别", "Class"): [class_name(cls, lang) for cls in DEFAULT_CLASSES],
-            tr(lang, "科研参考说明", "Research note"): [notes.get(cls, "") for cls in DEFAULT_CLASSES],
-        }
-    )
-    st.dataframe(ref, use_container_width=True, hide_index=True)
-
-    st.subheader(tr(lang, "方法与应用依据", "Method and Application Basis"))
-    st.dataframe(research_basis(lang), use_container_width=True, hide_index=True)
-
-    st.subheader(tr(lang, "参考文献", "References"))
-    ref_rows = []
-    for item in LITERATURE_REFERENCES:
-        if lang == "zh":
-            ref_rows.append({"编号": item["id"], "文献": item["title"], "本系统参考用途": item["use"]})
-        else:
-            ref_rows.append({"No.": item["id"], "Reference": item["title"], "Use in this system": item["use"]})
-    st.dataframe(pd.DataFrame(ref_rows), use_container_width=True, hide_index=True)
+    if "show_reference_tables" not in st.session_state:
+        st.session_state.show_reference_tables = False
+    if st.button(tr(lang, "方法依据和参考文献", "Method Basis and References"), type="primary"):
+        st.session_state.show_reference_tables = not st.session_state.show_reference_tables
     st.caption(
         tr(
             lang,
-            "注：参考文献用于说明太赫兹/拉曼/红外谱学在尿酸、痛风石、尿路结石及生物样本检测中的研究背景。本系统输出仍以当前纯品库、NNLS 分解、SVM 辅助和送检弱标签验证为准。",
-            "Note: references provide background for THz/Raman/FTIR spectroscopy in uric acid, gout stones, urinary stones, and biological detection. System outputs depend on the current reference spectra, NNLS, SVM, and weak-label validation.",
+            "点击按钮展开或收起方法依据、成分说明与参考文献。",
+            "Click the button to show or hide method basis, component notes, and references.",
         )
     )
-    st.caption(
-        tr(
-            lang,
-            "以上说明用于科研展示和报告解释，不构成诊断或治疗建议。",
-            "These notes are for research presentation only and are not diagnosis or treatment advice.",
+    if st.session_state.show_reference_tables:
+        st.subheader(tr(lang, "成分解释", "Component Notes"))
+        ref = pd.DataFrame(
+            {
+                tr(lang, "类别", "Class"): [class_name(cls, lang) for cls in DEFAULT_CLASSES],
+                tr(lang, "科研参考说明", "Research note"): [notes.get(cls, "") for cls in DEFAULT_CLASSES],
+            }
         )
-    )
+        st.dataframe(ref, use_container_width=True, hide_index=True)
+
+        st.subheader(tr(lang, "方法与应用依据", "Method and Application Basis"))
+        st.dataframe(research_basis(lang), use_container_width=True, hide_index=True)
+
+        st.subheader(tr(lang, "参考文献", "References"))
+        ref_rows = []
+        for item in LITERATURE_REFERENCES:
+            if lang == "zh":
+                ref_rows.append({"编号": item["id"], "文献": item["title"], "本系统参考用途": item["use"]})
+            else:
+                ref_rows.append({"No.": item["id"], "Reference": item["title"], "Use in this system": item["use"]})
+        st.dataframe(pd.DataFrame(ref_rows), use_container_width=True, hide_index=True)
+        st.caption(
+            tr(
+                lang,
+                "注：参考文献用于说明太赫兹/拉曼/红外谱学在尿酸、痛风石、尿路结石及生物样本检测中的研究背景。本系统输出仍以当前纯品库、NNLS 分解、拟合残差质控和送检弱标签验证为准。",
+                "Note: references provide background for THz/Raman/FTIR spectroscopy in uric acid, gout stones, urinary stones, and biological detection. System outputs depend on the current reference spectra, NNLS, residual quality control, and weak-label validation.",
+            )
+        )
+        st.caption(
+            tr(
+                lang,
+                "以上说明用于科研展示和报告解释，不构成诊断或治疗建议。",
+                "These notes are for research presentation only and are not diagnosis or treatment advice.",
+            )
+        )
