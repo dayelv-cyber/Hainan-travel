@@ -79,6 +79,16 @@ def normalize_weights(w: np.ndarray) -> np.ndarray:
     return w
 
 
+def residual_flag(relative_residual: float) -> str:
+    if relative_residual < 0.05:
+        return "拟合很好（可信）"
+    if relative_residual < 0.15:
+        return "一般（可能轻微偏差）"
+    if relative_residual < 0.25:
+        return "建议复核"
+    return "很可能基底不匹配/异常样本"
+
+
 def _preprocess_spectrum(X: np.ndarray) -> np.ndarray:
     X = _snv(X)
     return savgol_filter(X, window_length=SG_WINDOW, polyorder=SG_POLY, deriv=SG_DERIV, axis=1)
@@ -144,25 +154,29 @@ def compute_nnls_result(
     rows = []
     for i, sample in enumerate(mix_df.columns[1:]):
         w, _ = nnls(B, mix_X[:, i])
-        residual = np.linalg.norm(B @ w - mix_X[:, i]) / max(np.linalg.norm(mix_X[:, i]), 1e-9)
+        residual = np.linalg.norm(B @ w - mix_X[:, i])
+        relative_residual = residual / max(np.linalg.norm(mix_X[:, i]), 1e-9)
         prob = normalize_weights(w)
         if "DCP" in material_names:
             dcp_idx = material_names.index("DCP")
             prob[dcp_idx] = max(0, prob[dcp_idx] - DCP_BACKGROUND_OFFSET)
             prob = normalize_weights(prob)
-        row = {"Sample": sample, "拟合残差": float(residual)}
+        row = {
+            "Sample": sample,
+            "拟合残差": float(relative_residual),
+            "相对残差": float(relative_residual),
+        }
         row.update({cls: float(value) for cls, value in zip(material_names, prob)})
         rows.append(row)
 
     result = pd.DataFrame(rows)
     result = result[~result["Sample"].astype(str).isin(EXCLUDED_SAMPLES)].reset_index(drop=True)
-    classes = [c for c in result.columns if c not in {"Sample", "拟合残差"}]
+    classes = [c for c in result.columns if c not in {"Sample", "拟合残差", "相对残差"}]
     result["NNLS主成分"] = result[classes].idxmax(axis=1)
     result["NNLS置信度"] = result[classes].max(axis=1)
     result["NNLS成分构成"] = result.apply(lambda row: _format_components(row, classes), axis=1)
     result["NNLS前2位"] = result[classes].apply(lambda row: list(row.sort_values(ascending=False).index[:2]), axis=1)
-    residual_threshold = result["拟合残差"].mean() + result["拟合残差"].std()
-    result["残差标记"] = np.where(result["拟合残差"] > residual_threshold, "拟合残差偏高", "拟合残差正常")
+    result["残差标记"] = result["相对残差"].map(residual_flag)
     return result, classes
 
 
@@ -170,11 +184,17 @@ def load_nnls_result(path: str | Path = DEFAULT_NNLS_RESULT) -> tuple[pd.DataFra
     df = _read_csv(path).copy()
     if "Sample" in df.columns:
         df = df[~df["Sample"].astype(str).isin(EXCLUDED_SAMPLES)].reset_index(drop=True)
-    classes = [c for c in df.columns if c != "Sample"]
+    if "相对残差" not in df.columns and "拟合残差" in df.columns:
+        df["相对残差"] = df["拟合残差"]
+    if "拟合残差" not in df.columns and "相对残差" in df.columns:
+        df["拟合残差"] = df["相对残差"]
+    classes = [c for c in df.columns if c not in {"Sample", "拟合残差", "相对残差", "residual", "relative_residual"}]
     df["NNLS主成分"] = df[classes].idxmax(axis=1)
     df["NNLS置信度"] = df[classes].max(axis=1)
     df["NNLS成分构成"] = df.apply(lambda row: _format_components(row, classes), axis=1)
     df["NNLS前2位"] = df[classes].apply(lambda row: list(row.sort_values(ascending=False).index[:2]), axis=1)
+    if "相对残差" in df.columns:
+        df["残差标记"] = df["相对残差"].map(residual_flag)
     return df, classes
 
 
@@ -368,8 +388,8 @@ def run_v2_analysis(
     summary = nnls.copy()
     summary["构成状态"] = summary.apply(lambda row: _composition_status(row, nnls_classes), axis=1)
     summary["综合判断"] = np.where(
-        summary["残差标记"] == "拟合残差偏高",
-        summary["构成状态"] + "，拟合残差偏高，建议复核",
+        summary["相对残差"] >= 0.15,
+        summary["构成状态"] + "，" + summary["残差标记"],
         summary["构成状态"] + "，以NNLS分解为主",
     )
     summary["S69提示"] = summary["Sample"].map(

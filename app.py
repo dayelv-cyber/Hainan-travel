@@ -112,7 +112,7 @@ def summary_html_table(df: pd.DataFrame, lang: str) -> str:
         tr(lang, "主成分相对贡献", "Top Contribution"),
         tr(lang, "NNLS成分构成", "NNLS Composition"),
         tr(lang, "构成状态", "Composition Status"),
-        tr(lang, "拟合残差", "Fitting Residual"),
+        tr(lang, "相对残差", "Relative Residual"),
         tr(lang, "残差标记", "Residual Flag"),
         tr(lang, "综合判断", "Summary"),
     ]
@@ -125,7 +125,7 @@ def summary_html_table(df: pd.DataFrame, lang: str) -> str:
             f'{float(row["NNLS置信度"]):.4f}',
             html.escape(str(row["NNLS成分构成"])),
             html.escape(str(row["构成状态"])),
-            f'{float(row["拟合残差"]):.4f}' if "拟合残差" in row else "",
+            f'{float(row.get("相对残差", row.get("拟合残差", 0))):.4f}' if ("相对残差" in row or "拟合残差" in row) else "",
             html.escape(str(row.get("残差标记", ""))),
             html.escape(str(row["综合判断"])),
         ]
@@ -415,7 +415,7 @@ metric_cols[0].metric(tr(lang, "样品数", "Samples"), len(summary))
 metric_cols[1].metric(tr(lang, "类别数", "Classes"), len(classes))
 metric_cols[2].metric(tr(lang, "合理归属", "Reasonable"), f"{metrics['reasonable']}/{metrics['total']}")
 metric_cols[3].metric(tr(lang, "组合命中", "Top-2"), f"{metrics['combo']}/{metrics['total']}")
-high_residual_count = int((summary["残差标记"] == "拟合残差偏高").sum()) if "残差标记" in summary.columns else 0
+high_residual_count = int((summary["相对残差"] >= 0.15).sum()) if "相对残差" in summary.columns else 0
 metric_cols[4].metric(tr(lang, "残差复核", "Residual Review"), high_residual_count)
 
 count_df = class_count_frame(summary, lang)
@@ -477,7 +477,7 @@ if view == "main":
         "NNLS置信度",
         "NNLS成分构成",
         "构成状态",
-        "拟合残差",
+        "相对残差",
         "残差标记",
         "综合判断",
     ]
@@ -550,8 +550,8 @@ elif view == "sample":
             use_container_width=True,
         )
         st.dataframe(prob_df.drop(columns=["Class"]), use_container_width=True, hide_index=True)
-        if "拟合残差" in row:
-            st.metric(tr(lang, "拟合残差", "Fitting Residual"), f"{float(row['拟合残差']):.4f}", str(row.get("残差标记", "")))
+        if "相对残差" in row:
+            st.metric(tr(lang, "相对残差", "Relative Residual"), f"{float(row['相对残差']):.4f}", str(row.get("残差标记", "")))
     with right:
         st.subheader(tr(lang, "平均谱", "Mean Spectrum"))
         mean_df = analysis["mean_df"]
