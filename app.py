@@ -21,6 +21,8 @@ from config import (
     CLASS_LABELS_EN,
     DEFAULT_CLASSES,
     DEFAULT_DATA_DIR,
+    DEFAULT_FINAL_COMPARISON,
+    DEFAULT_FINAL_METRICS,
     DEFAULT_MEAN_FILE,
     DEFAULT_NNLS_RESULT,
     DEFAULT_PATIENT_FILE,
@@ -105,17 +107,35 @@ def component_mapping_text(lang: str) -> str:
     return "Component codes: " + "; ".join(f"{cls}={labels.get(cls, '')}" for cls in DEFAULT_CLASSES)
 
 
+def coarse_class(code: str) -> str:
+    code = str(code).split()[0].upper()
+    return "PHOS" if code in {"APA", "DCP"} else code
+
+
 def summary_html_table(df: pd.DataFrame, lang: str) -> str:
     headers = [
         tr(lang, "样品", "Sample"),
         tr(lang, "NNLS主成分", "NNLS Top"),
         tr(lang, "主成分相对贡献", "Top Contribution"),
         tr(lang, "NNLS成分构成", "NNLS Composition"),
+    ]
+    has_plsr = "PLSR_Main" in df.columns
+    if has_plsr:
+        headers.extend(
+            [
+                tr(lang, "PLSR主成分", "PLSR Top"),
+                tr(lang, "PLSR成分构成", "PLSR Composition"),
+                tr(lang, "PLSR-NNLS关系", "PLSR-NNLS Relation"),
+            ]
+        )
+    headers.extend(
+        [
         tr(lang, "构成状态", "Composition Status"),
         tr(lang, "相对残差", "Relative Residual"),
         tr(lang, "残差标记", "Residual Flag"),
         tr(lang, "综合判断", "Summary"),
-    ]
+        ]
+    )
     rows = []
     for _, row in df.iterrows():
         sample = str(row["样品"])
@@ -124,11 +144,23 @@ def summary_html_table(df: pd.DataFrame, lang: str) -> str:
             html.escape(class_name(str(row["NNLS主成分"]), lang)),
             f'{float(row["NNLS置信度"]):.4f}',
             html.escape(str(row["NNLS成分构成"])),
-            html.escape(str(row["构成状态"])),
-            f'{float(row.get("相对残差", row.get("拟合残差", 0))):.4f}' if ("相对残差" in row or "拟合残差" in row) else "",
-            html.escape(str(row.get("残差标记", ""))),
-            html.escape(str(row["综合判断"])),
         ]
+        if has_plsr:
+            cells.extend(
+                [
+                    html.escape(class_name(str(row.get("PLSR_Main", "")), lang)),
+                    html.escape(str(row.get("PLSR_Composition", ""))),
+                    html.escape(str(row.get("PLSR_NNLS关系", ""))),
+                ]
+            )
+        cells.extend(
+            [
+                html.escape(str(row["构成状态"])),
+                f'{float(row.get("相对残差", row.get("拟合残差", 0))):.4f}' if ("相对残差" in row or "拟合残差" in row) else "",
+                html.escape(str(row.get("残差标记", ""))),
+                html.escape(str(row["综合判断"])),
+            ]
+        )
         rows.append("<tr>" + "".join(f"<td>{cell}</td>" for cell in cells) + "</tr>")
     return (
         '<div class="table-wrap"><table class="sample-table">'
@@ -155,6 +187,106 @@ def source_signature(uploaded, default_path: Path) -> tuple[str, int]:
         return default_path.name, int(default_path.stat().st_mtime)
     except OSError:
         return default_path.name, 0
+
+
+def _parse_code_set(value) -> set[str]:
+    if pd.isna(value):
+        return set()
+    text = str(value).replace("，", "+").replace("/", "+")
+    return {part.strip() for part in text.split("+") if part.strip()}
+
+
+def _final_component_accuracy(final_df: pd.DataFrame, classes: list[str]) -> pd.DataFrame:
+    rows = []
+    ref_sets = final_df["长海成分集合"].map(_parse_code_set) if "长海成分集合" in final_df.columns else pd.Series([set()] * len(final_df))
+    cand_sets = final_df["NNLS候选成分>=0.10"].map(_parse_code_set) if "NNLS候选成分>=0.10" in final_df.columns else pd.Series([set()] * len(final_df))
+    for cls in classes:
+        ref_count = int(sum(cls in s for s in ref_sets))
+        hit_count = int(sum((cls in r) and (cls in c) for r, c in zip(ref_sets, cand_sets)))
+        pred_count = int(sum(cls in s for s in cand_sets))
+        correct_pred = int(sum((cls in r) and (cls in c) for r, c in zip(ref_sets, cand_sets)))
+        rows.append(
+            {
+                "成分": cls,
+                "送检出现次数": ref_count,
+                "检出次数": hit_count,
+                "检出率": round(hit_count / ref_count, 4) if ref_count else "",
+                "预测次数": pred_count,
+                "预测准确次数": correct_pred,
+                "预测准确率": round(correct_pred / pred_count, 4) if pred_count else "",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _final_metrics(final_df: pd.DataFrame) -> dict:
+    total = len(final_df)
+
+    def count_true(column: str) -> int:
+        if column not in final_df.columns:
+            return 0
+        return int(final_df[column].astype(bool).sum())
+
+    return {
+        "total": total,
+        "strict": count_true("NNLS主成分首位命中"),
+        "reasonable": count_true("NNLS主成分合理归属"),
+        "combo": count_true("NNLS组合覆盖>=0.10"),
+    }
+
+
+def load_final_analysis() -> dict:
+    final_df = pd.read_csv(DEFAULT_FINAL_COMPARISON)
+    final_df = final_df[~final_df["Sample"].astype(str).isin(["S42", "S49", "S69"])].copy()
+    method_metrics = pd.read_csv(DEFAULT_FINAL_METRICS) if DEFAULT_FINAL_METRICS.exists() else pd.DataFrame()
+    classes = [cls for cls in DEFAULT_CLASSES if cls in final_df.columns]
+
+    summary = final_df.copy()
+    summary = summary.rename(
+        columns={
+            "Sample": "样品",
+            "relative_residual": "相对残差",
+            "residual_flag": "残差标记",
+        }
+    )
+    if "NNLS置信度" not in summary.columns:
+        summary["NNLS置信度"] = summary.apply(lambda row: max(float(row[cls]) for cls in classes), axis=1)
+    if "构成状态" not in summary.columns:
+        summary["构成状态"] = summary["NNLS主成分"].map(lambda x: f"{x} 为主")
+    summary["综合判断"] = summary.apply(
+        lambda row: f"{row['构成状态']}，{row['残差标记']}" if float(row.get("相对残差", 0)) >= 0.15 else f"{row['构成状态']}，以NNLS分解为主",
+        axis=1,
+    )
+    if "PLSR_Main" in summary.columns:
+        def plsr_relation(row):
+            plsr = str(row.get("PLSR_Main", "")).strip()
+            nnls = str(row.get("NNLS主成分", "")).strip()
+            if not plsr or plsr.lower() == "nan":
+                return "无PLSR参考"
+            if plsr == nnls:
+                return "主成分一致"
+            if coarse_class(plsr) == coarse_class(nnls):
+                return "粗类一致"
+            return "互证存在差异"
+
+        summary["PLSR_NNLS关系"] = summary.apply(plsr_relation, axis=1)
+
+    mean_df = pd.read_csv(DEFAULT_MEAN_FILE) if DEFAULT_MEAN_FILE.exists() else pd.DataFrame()
+    raw_df = pd.read_csv(DEFAULT_PATIENT_FILE) if DEFAULT_PATIENT_FILE.exists() else pd.DataFrame()
+    return {
+        "summary": summary,
+        "validation": final_df,
+        "validation_metrics": _final_metrics(final_df),
+        "component_accuracy": _final_component_accuracy(final_df, classes),
+        "method_metrics": method_metrics,
+        "classes": classes,
+        "mean_df": mean_df,
+        "raw_df": raw_df,
+        "pca_pure": pd.DataFrame(),
+        "pca_sample": pd.DataFrame(),
+        "pca_explained_variance": 0.0,
+        "source_mode": "final",
+    }
 
 
 LITERATURE_REFERENCES = [
@@ -210,6 +342,11 @@ def research_basis(lang: str) -> pd.DataFrame:
                 "引用": "[4], [5]",
             },
             {
+                "模块": "PLSR 学习式互证",
+                "科研参考说明": "PLSR 基于合成混合谱学习“光谱到成分比例”的映射,用于从机器学习角度复核 NNLS 的主成分和组合趋势。PLSR 可计算预测误差或与 NNLS 的比例差异,但不等同于 NNLS 的谱图重构拟合残差。",
+                "引用": "[4], [5]",
+            },
+            {
                 "模块": "URIC 尿酸",
                 "科研参考说明": "尿酸及痛风石相关研究显示,THz/Raman/FTIR 等谱学方法可反映分子结构和组成差异。本系统中 URIC 高贡献提示尿酸相关谱型,仍需结合送检或临床结果确认。",
                 "引用": "[1], [2], [3]",
@@ -245,6 +382,11 @@ def research_basis(lang: str) -> pd.DataFrame:
             {
                 "Module": "Residual quality control",
                 "Research note": "The fitting residual measures how well the current pure-reference basis explains a sample spectrum. A high residual flags noise, baseline mismatch, complex mixture, or out-of-basis components.",
+                "Refs": "[4], [5]",
+            },
+            {
+                "Module": "PLSR validation",
+                "Research note": "PLSR learns the spectrum-to-composition mapping from synthetic mixtures and cross-checks the NNLS trend. Its prediction error or difference from NNLS is useful, but it is not the same as the NNLS spectral reconstruction residual.",
                 "Refs": "[4], [5]",
             },
             {
@@ -344,8 +486,8 @@ lang = "zh" if lang_label == "中文" else "en"
 title = APP_NAME_CN if lang == "zh" else APP_NAME_EN
 subtitle = tr(
     lang,
-    "基于标准品谱图的尿路结石成分分析与科研参考系统",
-    "Reference-spectrum-based urinary stone composition analysis system",
+    "基于 FTIR 采集的远红外—太赫兹光谱数据，结合 NNLS 多成分分解与机器学习辅助验证",
+    "Far-infrared/terahertz spectra acquired by FTIR, with NNLS decomposition and machine-learning-assisted validation",
 )
 st.markdown(f"<div class='hero'><h1>{title}</h1><p>{subtitle}</p></div>", unsafe_allow_html=True)
 st.warning(
@@ -357,15 +499,15 @@ st.warning(
 )
 
 st.sidebar.header(tr(lang, "数据与运行", "Data & Run"))
-st.sidebar.caption(tr(lang, "默认读取最终文件/大创中的最新数据；也可以上传文件临时替换。", "Default data are read from 最终文件/大创; uploaded files can temporarily override them."))
+st.sidebar.caption(tr(lang, "默认读取最终审定 20 样品结果表；上传原始重复谱 CSV 时可临时重算，用于现场演示。", "Default view reads the final reviewed 20-sample result table; uploading raw replicate spectra runs a temporary demo analysis."))
 st.sidebar.code(str(DEFAULT_DATA_DIR), language="text")
 
 with st.sidebar.expander(tr(lang, "上传检测文件", "Upload Detection File"), expanded=True):
     st.caption(
         tr(
             lang,
-            "上传一个原始重复谱 CSV 即可完成检测；后端会自动求平均、NNLS分解、拟合残差评估和送检验证。正常演示也可以不上传，系统会读取默认文件。",
-            "Upload one raw replicate-spectra CSV; backend will average replicates, run NNLS, residual quality control, and validation. For demos, uploading is optional.",
+            "上传一个原始重复谱 CSV 即可完成临时检测；后端会自动求平均、NNLS分解、拟合残差评估和送检验证。不上传时显示最终 20 样品审定结果。",
+            "Upload one raw replicate-spectra CSV for a temporary demo analysis; backend will average replicates, run NNLS, residual quality control, and validation. Without upload, the final 20-sample reviewed results are shown.",
         )
     )
     raw_upload = st.file_uploader(
@@ -375,33 +517,37 @@ with st.sidebar.expander(tr(lang, "上传检测文件", "Upload Detection File")
     )
 
 active_sources = {
-    "raw": source_name(raw_upload, DEFAULT_PATIENT_FILE),
+    "raw": source_name(raw_upload, DEFAULT_FINAL_COMPARISON if raw_upload is None else DEFAULT_PATIENT_FILE),
 }
 st.sidebar.caption(
     tr(
         lang,
-        "当前检测文件: " + active_sources["raw"],
-        "Current detection file: " + active_sources["raw"],
+        "当前数据源: " + active_sources["raw"],
+        "Current data source: " + active_sources["raw"],
     )
 )
 run = st.sidebar.button(tr(lang, "运行/刷新分析", "Run / Refresh"), type="primary")
 
 input_signature = (
-    source_signature(raw_upload, DEFAULT_PATIENT_FILE),
+    source_signature(raw_upload, DEFAULT_FINAL_COMPARISON),
 )
 if st.session_state.get("input_signature") != input_signature:
     st.session_state.pop("v2_analysis", None)
     st.session_state.input_signature = input_signature
 
 if "v2_analysis" not in st.session_state or run:
-    with st.spinner(tr(lang, "正在计算 NNLS 分解、拟合残差和验证指标...", "Running NNLS, residual quality control, and validation...")):
-        st.session_state.v2_analysis = run_v2_analysis(
-            pure_path=DEFAULT_PURE_FILE,
-            mean_path=DEFAULT_MEAN_FILE,
-            raw_path=DEFAULT_PATIENT_FILE,
-            validation_path=DEFAULT_VALIDATION_FILE,
-            uploaded_raw_source=raw_upload,
-        )
+    if raw_upload is None:
+        with st.spinner(tr(lang, "正在读取最终 20 样品审定结果...", "Loading final reviewed 20-sample results...")):
+            st.session_state.v2_analysis = load_final_analysis()
+    else:
+        with st.spinner(tr(lang, "正在计算 NNLS 分解、拟合残差和验证指标...", "Running NNLS, residual quality control, and validation...")):
+            st.session_state.v2_analysis = run_v2_analysis(
+                pure_path=DEFAULT_PURE_FILE,
+                mean_path=DEFAULT_MEAN_FILE,
+                raw_path=DEFAULT_PATIENT_FILE,
+                validation_path=DEFAULT_VALIDATION_FILE,
+                uploaded_raw_source=raw_upload,
+            )
 
 analysis = st.session_state.v2_analysis
 summary = analysis["summary"]
@@ -476,11 +622,15 @@ if view == "main":
         "NNLS主成分",
         "NNLS置信度",
         "NNLS成分构成",
+        "PLSR_Main",
+        "PLSR_Composition",
+        "PLSR_NNLS关系",
         "构成状态",
         "相对残差",
         "残差标记",
         "综合判断",
     ]
+    main_cols = [col for col in main_cols if col in summary.columns]
     st.caption(tr(lang, "点击样品编号可进入样品详情。", "Click a sample ID to open its detail page."))
     st.markdown(summary_html_table(summary[main_cols], lang), unsafe_allow_html=True)
     if st.button(tr(lang, "导出 Excel", "Export Excel")):
@@ -520,6 +670,9 @@ elif view == "validation":
             "Recall shows whether top-2 NNLS covers a component present in validation; precision shows whether a predicted top-2 component appears in the detailed validation composition.",
         )
     )
+    if "method_metrics" in analysis and not analysis["method_metrics"].empty:
+        st.subheader(tr(lang, "最终方法指标汇总", "Final Method Metrics"))
+        st.dataframe(analysis["method_metrics"], use_container_width=True, hide_index=True)
     st.dataframe(localize_class_columns(validation.drop(columns=["S69提示"], errors="ignore"), lang), use_container_width=True, hide_index=True)
 
 elif view == "sample":
@@ -645,49 +798,44 @@ elif view == "pca":
 elif view == "reference":
     label_map = labels_for(lang)
     notes = THERAPY_NOTES_CN if lang == "zh" else THERAPY_NOTES_EN
-    if "show_reference_tables" not in st.session_state:
-        st.session_state.show_reference_tables = False
-    if st.button(tr(lang, "方法依据和参考文献", "Method Basis and References"), type="primary"):
-        st.session_state.show_reference_tables = not st.session_state.show_reference_tables
     st.caption(
         tr(
             lang,
-            "点击按钮展开或收起方法依据、成分说明与参考文献。",
-            "Click the button to show or hide method basis, component notes, and references.",
+            "以下内容用于说明方法依据、成分解释与参考文献。",
+            "The following tables summarize method basis, component notes, and references.",
         )
     )
-    if st.session_state.show_reference_tables:
-        st.subheader(tr(lang, "成分解释", "Component Notes"))
-        ref = pd.DataFrame(
-            {
-                tr(lang, "类别", "Class"): [class_name(cls, lang) for cls in DEFAULT_CLASSES],
-                tr(lang, "科研参考说明", "Research note"): [notes.get(cls, "") for cls in DEFAULT_CLASSES],
-            }
-        )
-        st.dataframe(ref, use_container_width=True, hide_index=True)
+    st.subheader(tr(lang, "成分解释", "Component Notes"))
+    ref = pd.DataFrame(
+        {
+            tr(lang, "类别", "Class"): [class_name(cls, lang) for cls in DEFAULT_CLASSES],
+            tr(lang, "科研参考说明", "Research note"): [notes.get(cls, "") for cls in DEFAULT_CLASSES],
+        }
+    )
+    st.dataframe(ref, use_container_width=True, hide_index=True)
 
-        st.subheader(tr(lang, "方法与应用依据", "Method and Application Basis"))
-        st.dataframe(research_basis(lang), use_container_width=True, hide_index=True)
+    st.subheader(tr(lang, "方法与应用依据", "Method and Application Basis"))
+    st.dataframe(research_basis(lang), use_container_width=True, hide_index=True)
 
-        st.subheader(tr(lang, "参考文献", "References"))
-        ref_rows = []
-        for item in LITERATURE_REFERENCES:
-            if lang == "zh":
-                ref_rows.append({"编号": item["id"], "文献": item["title"], "本系统参考用途": item["use"]})
-            else:
-                ref_rows.append({"No.": item["id"], "Reference": item["title"], "Use in this system": item["use"]})
-        st.dataframe(pd.DataFrame(ref_rows), use_container_width=True, hide_index=True)
-        st.caption(
-            tr(
-                lang,
-                "注：参考文献用于说明太赫兹/拉曼/红外谱学在尿酸、痛风石、尿路结石及生物样本检测中的研究背景。本系统输出仍以当前纯品库、NNLS 分解、拟合残差质控和送检弱标签验证为准。",
-                "Note: references provide background for THz/Raman/FTIR spectroscopy in uric acid, gout stones, urinary stones, and biological detection. System outputs depend on the current reference spectra, NNLS, residual quality control, and weak-label validation.",
-            )
+    st.subheader(tr(lang, "参考文献", "References"))
+    ref_rows = []
+    for item in LITERATURE_REFERENCES:
+        if lang == "zh":
+            ref_rows.append({"编号": item["id"], "文献": item["title"], "本系统参考用途": item["use"]})
+        else:
+            ref_rows.append({"No.": item["id"], "Reference": item["title"], "Use in this system": item["use"]})
+    st.dataframe(pd.DataFrame(ref_rows), use_container_width=True, hide_index=True)
+    st.caption(
+        tr(
+            lang,
+            "注：参考文献用于说明太赫兹/拉曼/红外谱学在尿酸、痛风石、尿路结石及生物样本检测中的研究背景。本系统输出仍以当前纯品库、NNLS 分解、PLSR 学习式互证、拟合残差质控和送检弱标签验证为准。",
+            "Note: references provide background for THz/Raman/FTIR spectroscopy in uric acid, gout stones, urinary stones, and biological detection. System outputs depend on the current reference spectra, NNLS, PLSR cross-validation, residual quality control, and weak-label validation.",
         )
-        st.caption(
-            tr(
-                lang,
-                "以上说明用于科研展示和报告解释，不构成诊断或治疗建议。",
-                "These notes are for research presentation only and are not diagnosis or treatment advice.",
-            )
+    )
+    st.caption(
+        tr(
+            lang,
+            "以上说明用于科研展示和报告解释，不构成诊断或治疗建议。",
+            "These notes are for research presentation only and are not diagnosis or treatment advice.",
         )
+    )

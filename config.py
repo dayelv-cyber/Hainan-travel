@@ -1,8 +1,8 @@
 from pathlib import Path
 
 
-APP_NAME_CN = "尿结石 FTIR 标准品比对与自动初筛系统"
-APP_NAME_EN = "FTIR-Based Urinary Stone Screening System"
+APP_NAME_CN = "基于太赫兹光谱结合机器学习的尿结石研究"
+APP_NAME_EN = "Terahertz Spectroscopy and Machine Learning for Urinary Stone Analysis"
 
 PROJECT_DIR = Path(__file__).resolve().parent
 WORKSPACE_DIR = PROJECT_DIR.parent
@@ -21,6 +21,8 @@ DEFAULT_VALIDATION_FILE = (
 DEFAULT_PCA_PURE_IMAGE = DEFAULT_DATA_DIR / "纯品PCA分类.png"
 DEFAULT_PCA_PATIENT_IMAGE = DEFAULT_DATA_DIR / "病人结石PCA投影.png"
 DEFAULT_EXISTING_RESULT = DEFAULT_NNLS_RESULT
+DEFAULT_FINAL_COMPARISON = DEFAULT_DATA_DIR / "00_四方法最终对照表_20样品.csv"
+DEFAULT_FINAL_METRICS = DEFAULT_DATA_DIR / "00_方法指标汇总.csv"
 OUTPUT_DIR = PROJECT_DIR / "outputs"
 
 FREQ_MIN = 1.0
@@ -35,7 +37,7 @@ MINOR_PROB_THRESHOLD = 0.10
 PEAK_TOLERANCE = 0.10
 
 DEFAULT_CLASSES = ["CAOX", "DCY", "URIC", "APA", "DCP"]
-EXCLUDED_SAMPLES = ["S42", "S69"]
+EXCLUDED_SAMPLES = ["S42", "S49", "S69"]
 DCP_BACKGROUND_OFFSET = 0.2
 CLASS_LABELS_CN = {
     "CAOX": "草酸钙",
